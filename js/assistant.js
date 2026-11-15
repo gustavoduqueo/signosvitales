@@ -268,6 +268,32 @@ const Assistant = (() => {
     return null;
   }
 
+  /** Turn free text into check-in values using the AI service's /extract endpoint. */
+  async function extract(text) {
+    if (!crew.webhookUrl) throw new Error('no AI service configured');
+    const url = crew.webhookUrl.replace(/\/+$/, '') + '/extract';
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 25000);
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data && typeof data.error === 'string') throw new Error(data.error);
+      if (!res.ok || !data || typeof data.values !== 'object') throw new Error(`HTTP ${res.status}`);
+      return data;
+    } catch (e) {
+      if (e.name === 'AbortError') throw new Error('no answer after 25 s');
+      if (e instanceof TypeError) throw new Error('network or CORS error');
+      throw e;
+    } finally {
+      clearTimeout(to);
+    }
+  }
+
   async function testConnection(url) {
     const prev = crew.webhookUrl;
     crew.webhookUrl = url;
@@ -445,5 +471,5 @@ const Assistant = (() => {
       : '⚪ Answers from: <b>offline rules</b>. Add an AI service URL in ⚙ Settings to use a free LLM.';
   }
 
-  return { init, renderChat, renderEngine, testConnection, endCall, isOnCall: () => call.active };
+  return { init, renderChat, renderEngine, testConnection, endCall, extract, parseLogs, isOnCall: () => call.active };
 })();

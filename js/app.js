@@ -232,6 +232,103 @@ function simulateWearable() {
   toast('⌚ Synced vitals from the wearable (simulated)');
 }
 
+/* ---------- AI fill for the check-in ---------- */
+function aiStatus(text, cls = 'muted') {
+  const el = $('#aiStatus');
+  el.className = `small ${cls}`;
+  el.textContent = text;
+}
+
+function applyValuesToForm(values, moodEstimated) {
+  const filled = [];
+  Object.entries(values).forEach(([id, v]) => {
+    const ind = IND[id];
+    if (!ind || v == null || Number.isNaN(+v) || v < ind.input.min || v > ind.input.max) return;
+    const field = $(`#checkinForm .field[data-id="${id}"]`);
+    if (!field) return;
+    if (id === 'mood') {
+      const r = $(`#checkinForm input[name="mood"][value="${Math.round(v)}"]`);
+      if (!r) return;
+      r.checked = true;
+      field.classList.toggle('estimated', !!moodEstimated);
+    } else {
+      const inp = $(`#f-${id}`);
+      inp.value = v;
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+    field.classList.add('ai-filled');
+    filled.push(id === 'mood' ? `mood ${Math.round(v)}/5${moodEstimated ? ' (estimated)' : ''}` : `${ind.short.toLowerCase()} ${fmtVal(id, +v)}`);
+  });
+  return filled;
+}
+
+async function aiFill() {
+  const text = $('#aiText').value.trim();
+  if (!text) { aiStatus('Describe your day first, by typing or with 🎤.', 'txt-yellow'); $('#aiText').focus(); return; }
+  const btn = $('#btnAiFill');
+  btn.disabled = true;
+  $$('#checkinForm .field.ai-filled').forEach((f) => f.classList.toggle('ai-filled', false));
+  $$('#checkinForm .field.estimated').forEach((f) => f.classList.toggle('estimated', false));
+  aiStatus('✨ Reading your notes…');
+  let values = null;
+  let moodEstimated = false;
+  let source = 'AI';
+  let note = '';
+  if (crew.webhookUrl) {
+    try {
+      const r = await Assistant.extract(text);
+      values = r.values;
+      moodEstimated = !!r.mood_estimated;
+      if (r.dropped && r.dropped.length) note = ` Ignored impossible values: ${r.dropped.map((d) => (IND[d] ? IND[d].short : d)).join(', ')}.`;
+    } catch (e) {
+      note = ` (AI unavailable: ${e.message}.)`;
+    }
+  }
+  if (!values) { values = Assistant.parseLogs(text); source = 'basic pattern matching'; }
+  btn.disabled = false;
+  if (ui.tab !== 'checkin' || !state) return;
+  const filled = applyValuesToForm(values, moodEstimated);
+  if (!filled.length) {
+    aiStatus(`I couldn't find any measurements in your text.${note} Try including numbers, like "heart rate 70" or "slept 7 hours".`, 'txt-yellow');
+    return;
+  }
+  aiStatus(`Filled ${filled.length} value${filled.length > 1 ? 's' : ''} with ${source}: ${filled.join(', ')}.${note} Review them, then press Save check-in.`, 'txt-green');
+  const first = $('#checkinForm .field.ai-filled');
+  if (first) first.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+let dictation = null;
+function toggleDictation() {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) { aiStatus('Voice dictation needs Chrome, Edge or Safari. You can type instead.', 'txt-yellow'); return; }
+  if (dictation) { dictation.stop(); return; }
+  const r = new SR();
+  dictation = r;
+  r.lang = 'en-US';
+  r.interimResults = true;
+  r.continuous = true;
+  const box = $('#aiText');
+  const before = box.value ? box.value.replace(/\s*$/, ' ') : '';
+  let finalText = '';
+  r.onresult = (e) => {
+    let interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) finalText += e.results[i][0].transcript + ' ';
+      else interim += e.results[i][0].transcript;
+    }
+    box.value = (before + finalText + interim).trimStart();
+  };
+  r.onerror = (e) => { if (e.error !== 'no-speech' && e.error !== 'aborted') aiStatus(`Dictation error: ${e.error}`, 'txt-red'); };
+  r.onend = () => {
+    dictation = null;
+    $('#btnAiMic').classList.toggle('rec', false);
+    if (finalText.trim()) aiStatus('Got it. Press ✨ Fill with AI.', 'muted');
+  };
+  $('#btnAiMic').classList.toggle('rec', true);
+  aiStatus('🎤 Listening… describe your day, then press 🎤 again to stop.');
+  try { r.start(); } catch (e) { dictation = null; $('#btnAiMic').classList.toggle('rec', false); }
+}
+
 /* ---------- trends ---------- */
 function renderTrends() {
   $('#trendChips').innerHTML = INDICATORS.map((i) => `<button class="chip-btn${ui.trendId === i.id ? ' active' : ''}" data-trend="${i.id}"><span class="dot st-${indStatus(i.id)}"></span>${esc(i.short)}</button>`).join('');
@@ -427,6 +524,9 @@ const App = {
   onLock() {
     closeModal();
     $('#toasts').innerHTML = '';
+    if (dictation) dictation.abort();
+    $('#aiText').value = '';
+    aiStatus('');
     ui.system = null;
     ui.indicator = null;
     // clear rendered health data so nothing from the previous astronaut stays in the page
@@ -479,6 +579,9 @@ function wireEvents() {
   $('#checkinForm').addEventListener('input', onCheckinInput);
   $('#checkinForm').addEventListener('submit', onCheckinSubmit);
   $('#btnSync').addEventListener('click', simulateWearable);
+  $('#btnAiFill').addEventListener('click', aiFill);
+  $('#btnAiMic').addEventListener('click', toggleDictation);
+  $('#aiText').addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); aiFill(); } });
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnReport').addEventListener('click', openReport);
   window.addEventListener('hashchange', () => { if (state) showTab(tabFromHash()); });

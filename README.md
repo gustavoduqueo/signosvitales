@@ -6,7 +6,7 @@ On long missions, astronauts are responsible for spotting health changes in them
 
 | Step | What the app does |
 |---|---|
-| **Measure** | A daily routine prompts each measurement: sleep, morning vitals, fasting glucose, dosimeter, exercise and mood. Values can be typed, synced from a (simulated) wearable, or **spoken** to the AI. |
+| **Measure** | A daily routine prompts each measurement: sleep, morning vitals, fasting glucose, dosimeter, exercise and mood. Values can be typed, synced from a (simulated) wearable, **spoken** to the AI, or filled in by AI from a plain description of your day. |
 | **Assess** | Every value is compared with a **green / yellow / red** range. A clickable **body map** colors each body system by its worst indicator, and a **readiness score** summarizes the day. |
 | **Act** | Every yellow or red result comes with concrete steps. Red results are flagged for the flight surgeon, and a one-click **report** shows the signal delay to Earth. |
 | **Ask** | **MEDIC**, the onboard AI medical officer, explains results by chat or by a **voice call**, and logs values hands-free ("heart rate 72, blood pressure 118 over 76"). |
@@ -83,6 +83,13 @@ Browser speaks the reply (speechSynthesis)
 - **Survives model retirements:** if Groq retires a model, the Worker asks Groq which models are available and picks a chat model automatically. It currently uses `openai/gpt-oss-120b`.
 - **Protected:** only `https://gustavoduqueo.github.io` and `localhost` can call it from a browser, with a best-effort limit of 20 requests per minute per IP.
 - **Fallback:** if the AI is unreachable, MEDIC says so in the chat and answers with its offline rules.
+
+**✨ AI check-in (`POST /extract`):** on the Check-in tab, astronauts describe their day in their own words, typed or dictated, for example *"Slept about six and a half hours, kind of homesick. Heart rate 68, pressure 124 over 81, temp 36.9. 90 minutes on the treadmill, dosimeter 1.9."*
+- The Worker asks the LLM for JSON and converts units (°F→°C, mmol/L→mg/dL, hours→minutes, µSv→mSv).
+- It drops physically impossible values and incomplete blood pressures before anything reaches the app.
+- Mood can be inferred from feelings ("homesick" → 2/5) and is then marked as an estimate.
+- **The AI only fills the form.** Filled fields are highlighted, and nothing is saved until the astronaut reviews them and presses **Save check-in**.
+- If the AI is unavailable, the app falls back to basic pattern matching.
 
 Health check: `curl https://medic-ai.signosvitales.workers.dev/` returns `{"ok":true,"keyConfigured":true,...}`.
 

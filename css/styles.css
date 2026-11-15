@@ -417,3 +417,13 @@ body.locked > :not(#login):not(#toasts) { display: none !important; }
   .row2 { grid-template-columns: 1fr; }
   .keypad { grid-template-columns: repeat(3, 64px); }
 }
+
+/* AI check-in fill */
+.ai-fill { background: linear-gradient(135deg, rgba(56, 189, 248, 0.08), rgba(129, 140, 248, 0.08)); border: 1px solid rgba(125, 211, 252, 0.35); border-radius: 12px; padding: 12px 14px; margin-bottom: 14px; }
+.ai-fill label { display: block; margin-bottom: 6px; }
+.ai-fill textarea { width: 100%; font-family: inherit; font-size: 0.92rem; margin-bottom: 8px; resize: vertical; }
+.ai-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.icon-btn.rec { background: var(--bad); border-color: var(--bad); }
+.field.ai-filled input, .field.ai-filled .mood-opt input:checked + span { border-color: var(--accent2); box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.25); }
+.field.ai-filled > label::after { content: ' ✨ AI'; font-size: 0.7rem; color: var(--accent2); font-weight: 700; }
+.field.ai-filled.estimated > label::after { content: ' ✨ AI estimate, please check'; }

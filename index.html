@@ -96,7 +96,16 @@
     <section id="tab-checkin" class="tab">
       <div class="card">
         <div class="card-h"><h2>Daily check-in</h2><button class="btn small" id="btnSync" type="button">⌚ Sync wearable (simulated)</button></div>
-        <p class="muted">Log what you measured today. Each field turns green, yellow or red as you type. You can also log values by voice: <i>"heart rate 72, blood pressure 118 over 76"</i> with MEDIC.</p>
+        <div class="ai-fill">
+          <label for="aiText"><b>✨ Describe your day</b> <span class="muted small">in your own words, and AI fills in the form. You review it before saving.</span></label>
+          <textarea id="aiText" rows="3" maxlength="2000" placeholder="e.g. Slept about six and a half hours, kind of homesick today. Heart rate 68, pressure 124 over 81, temp 36.9. Did 90 minutes on the treadmill and the dosimeter says 1.9."></textarea>
+          <div class="ai-actions">
+            <button type="button" class="icon-btn" id="btnAiMic" title="Dictate" aria-label="Dictate">🎤</button>
+            <button type="button" class="btn primary small" id="btnAiFill">✨ Fill with AI</button>
+            <span id="aiStatus" class="small muted" role="status"></span>
+          </div>
+        </div>
+        <p class="muted">Or type the values below. Each field turns green, yellow or red as you type.</p>
         <form id="checkinForm" novalidate></form>
       </div>
     </section>

@@ -97,7 +97,8 @@ async function discoverModels(env) {
   return ids;
 }
 
-async function askGroq(messages, env) {
+async function askGroq(messages, env, opts = {}) {
+  let jsonMode = !!opts.json;
   const first = [env.GROQ_MODEL, workingModel, ...DEFAULT_MODELS].filter(Boolean);
   const tried = new Set();
   let lastError = 'no model available';
@@ -111,15 +112,16 @@ async function askGroq(messages, env) {
       method: 'POST',
       headers: { Authorization: `Bearer ${env.GROQ_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model, messages, temperature: 0.4, max_tokens: 1024,
+        model, messages, temperature: opts.temperature ?? 0.4, max_tokens: 1024,
         ...(/gpt-oss/i.test(model) ? { reasoning_effort: 'low', include_reasoning: false } : {}),
+        ...(jsonMode ? { response_format: { type: 'json_object' } } : {}),
       }),
     });
     const data = await res.json().catch(() => ({}));
     if (res.ok) {
       const choice = data.choices?.[0];
       let reply = choice?.message?.content?.trim();
-      if (reply && choice.finish_reason === 'length') { // cut off: keep complete sentences only
+      if (reply && choice.finish_reason === 'length' && !opts.json) { // cut off: keep complete sentences only
         const end = Math.max(reply.lastIndexOf('. '), reply.lastIndexOf('! '), reply.lastIndexOf('? '));
         if (end > 40) reply = reply.slice(0, end + 1);
       }
@@ -128,6 +130,9 @@ async function askGroq(messages, env) {
     } else {
       lastError = `Groq ${res.status}: ${data.error?.message || res.statusText}`;
       if (res.status === 401 || res.status === 429) break; // bad key / rate limited: other models won't help
+      if (jsonMode && res.status === 400 && /response_format|json/i.test(lastError)) { // model has no JSON mode: retry plain
+        jsonMode = false; tried.delete(model); i--; continue;
+      }
       if (model === workingModel) workingModel = null;
     }
     // ran out of known names (e.g. models retired): ask Groq what is available now
@@ -137,6 +142,73 @@ async function askGroq(messages, env) {
     }
   }
   throw new Error(lastError);
+}
+
+/* ---------- /extract: free text -> check-in form values ---------- */
+const LIMITS = { // physically possible ranges (same as the app's inputs)
+  hr: [25, 220], sbp: [60, 240], dbp: [30, 150], spo2: [50, 100], temp: [33, 43], glucose: [20, 500],
+  sleep: [0, 16], mood: [1, 5], exercise: [0, 400], rad: [0, 100],
+};
+
+const EXTRACT_PROMPT = `You fill in an astronaut's daily health check-in form from their own words.
+Return ONLY a JSON object. Include a key only if the text gives that information; never guess or invent numbers.
+A number given without a unit is already in the unit listed below: do not convert it.
+Keys:
+- hr: resting heart rate in beats per minute (number)
+- sbp, dbp: blood pressure systolic and diastolic in mmHg ("124 over 81" -> sbp 124, dbp 81)
+- spo2: blood oxygen saturation in %
+- temp: body temperature in °C (convert °F to °C, one decimal)
+- glucose: blood glucose in mg/dL (convert mmol/L by multiplying by 18)
+- sleep: hours slept last night (decimal; "six and a half" -> 6.5; "7h30" -> 7.5)
+- mood: integer 1-5 (1 very low, 2 low, 3 okay, 4 good, 5 great). Use a number the person gives, or infer it from how they describe their feelings (e.g. "homesick", "exhausted", "great day").
+- mood_estimated: true if mood was inferred from feelings rather than stated as a number
+- exercise: minutes of exercise today (convert hours to minutes; add up several sessions; "skipped exercise" or "no workout" -> 0)
+- rad: radiation dose today in mSv from the dosimeter ("dosimeter 1.9" -> 1.9). Divide by 1000 ONLY when the text explicitly says µSv or microsieverts.
+Example: "slept 6 and a half hours, kind of homesick, HR 68, BP 124/81, 1.5 hours on the treadmill"
+-> {"sleep":6.5,"mood":2,"mood_estimated":true,"hr":68,"sbp":124,"dbp":81,"exercise":90}
+Example: "dosimeter reads 1.9, skipped my workout, mood 4"
+-> {"rad":1.9,"exercise":0,"mood":4,"mood_estimated":false}`;
+
+function parseJsonObject(text) {
+  if (!text) return null;
+  const cleaned = text.replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  try { return JSON.parse(cleaned.slice(start, end + 1)); } catch { return null; }
+}
+
+function validateValues(raw) {
+  const values = {};
+  const dropped = [];
+  for (const [key, [lo, hi]] of Object.entries(LIMITS)) {
+    if (raw[key] === undefined || raw[key] === null || raw[key] === '') continue;
+    let v = Number(raw[key]);
+    if (!Number.isFinite(v)) { dropped.push(key); continue; }
+    if (key === 'temp' && v > 50) v = (v - 32) / 1.8; // missed °F conversion
+    if (key === 'mood') v = Math.round(v);
+    if (v < lo || v > hi) { dropped.push(key); continue; }
+    values[key] = key === 'temp' || key === 'sleep' ? Math.round(v * 10) / 10 : key === 'rad' ? Math.round(v * 100) / 100 : Math.round(v);
+  }
+  if ((values.sbp !== undefined) !== (values.dbp !== undefined) || (values.sbp !== undefined && values.sbp <= values.dbp)) {
+    if (values.sbp !== undefined) dropped.push('sbp');
+    if (values.dbp !== undefined) dropped.push('dbp');
+    delete values.sbp; delete values.dbp;
+  }
+  return { values, dropped };
+}
+
+async function handleExtract(body, env, headers) {
+  const text = String(body.text || '').slice(0, 2000).trim();
+  if (!text) return json({ error: 'text is required' }, 400, headers);
+  const { reply, model } = await askGroq([
+    { role: 'system', content: EXTRACT_PROMPT },
+    { role: 'user', content: text },
+  ], env, { json: true, temperature: 0 });
+  const raw = parseJsonObject(reply);
+  if (!raw || typeof raw !== 'object') return json({ error: 'The AI did not return valid data. Try rephrasing.' }, 502, headers);
+  const { values, dropped } = validateValues(raw);
+  return json({ values, mood_estimated: values.mood !== undefined && raw.mood_estimated === true, dropped, model }, 200, headers);
 }
 
 export default {
@@ -157,6 +229,9 @@ export default {
 
     let body;
     try { body = await request.json(); } catch { return json({ error: 'Body must be JSON' }, 400, headers); }
+    if (new URL(request.url).pathname.replace(/\/+$/, '') === '/extract') {
+      try { return await handleExtract(body, env, headers); } catch (e) { return json({ error: e.message }, 502, headers); }
+    }
     const { userMessage, messages } = buildMessages(body);
     if (!userMessage) return json({ error: 'user_message is required' }, 400, headers);
 
