@@ -417,6 +417,3 @@ body.locked > :not(#login):not(#toasts) { display: none !important; }
   .row2 { grid-template-columns: 1fr; }
   .keypad { grid-template-columns: repeat(3, 64px); }
 }
-
-.msg .replay { background: none; border: 0; cursor: pointer; font-size: 0.8rem; padding: 0 2px; opacity: 0.7; }
-.msg .replay:hover { opacity: 1; }
