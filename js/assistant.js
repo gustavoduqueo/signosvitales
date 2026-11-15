@@ -37,7 +37,8 @@ const Assistant = (() => {
       if (m.role === 'system') return `<div class="msg system">${esc(m.text)}</div>`;
       const who = m.role === 'user' ? esc(me().name) : 'MEDIC';
       const tag = m.tag ? `<span class="tag tag-${m.tag}">${tagLabel[m.tag] || m.tag}</span>` : '';
-      return `<div class="msg ${m.role}"><div class="who">${who} ${tag}</div><div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div></div>`;
+      const replay = m.role === 'assistant' && TTS ? `<button class="replay" data-say="${state.chat.indexOf(m)}" title="Play this reply" aria-label="Play this reply">🔊</button>` : '';
+      return `<div class="msg ${m.role}"><div class="who">${who} ${tag}${replay}</div><div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div></div>`;
     }).join('');
     box.scrollTop = box.scrollHeight;
   }
@@ -147,34 +148,72 @@ const Assistant = (() => {
     try { r.start(); } catch (e) { rec = null; setPhase('idle'); }
   }
 
-  function pickVoice() {
+  /* Prefer voices that run on the device (work offline, no network errors);
+     online voices such as "Google US English" fail silently on some networks. */
+  let voiceCache = [];
+  let voiceWarned = false;
+  function loadVoices() { if (TTS) voiceCache = speechSynthesis.getVoices(); return voiceCache; }
+
+  function pickVoice(localOnly = false) {
     if (!TTS) return null;
-    const voices = speechSynthesis.getVoices().filter((v) => v.lang && v.lang.toLowerCase().startsWith('en'));
-    const pref = ['Google US English', 'Samantha', 'Microsoft Aria', 'Microsoft Jenny', 'Alex'];
-    for (const p of pref) { const v = voices.find((x) => x.name.includes(p)); if (v) return v; }
-    return voices[0] || null;
+    const voices = (voiceCache.length ? voiceCache : loadVoices()).filter((v) => v.lang && v.lang.toLowerCase().startsWith('en'));
+    const local = voices.filter((v) => v.localService);
+    const pool = localOnly || local.length ? local : voices;
+    const pref = ['Samantha', 'Ava', 'Allison', 'Alex', 'Daniel', 'Karen', 'Microsoft Aria', 'Microsoft Jenny', 'Microsoft Zira', 'Google US English'];
+    for (const p of pref) { const v = pool.find((x) => x.name.includes(p)); if (v) return v; }
+    return pool.find((v) => /en[-_]US/i.test(v.lang)) || pool[0] || null;
   }
 
-  function speak(text) {
+  function cleanForSpeech(text) {
+    return text.replace(/[*_#`]/g, '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+      .replace(/SpO₂/g, 'S P O 2').replace(/mg\/dL/g, 'milligrams per deciliter').replace(/mmHg/g, 'millimeters of mercury')
+      .replace(/mSv/g, 'millisieverts').replace(/°C/g, 'degrees Celsius').replace(/(\d+)\/(\d+)/g, '$1 over $2');
+  }
+
+  function speak(text, { force = false } = {}) {
     return new Promise((resolve) => {
-      if (!TTS || !crew.ttsOn) { resolve(); return; }
-      speechSynthesis.cancel();
-      const clean = text.replace(/[*_#`]/g, '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
-        .replace(/SpO₂/g, 'S P O 2').replace(/mg\/dL/g, 'milligrams per deciliter').replace(/mmHg/g, 'millimeters of mercury')
-        .replace(/mSv/g, 'millisieverts').replace(/°C/g, 'degrees Celsius').replace(/(\d+)\/(\d+)/g, '$1 over $2');
-      const u = new SpeechSynthesisUtterance(clean);
-      u.lang = 'en-US';
-      const v = pickVoice();
-      if (v) u.voice = v;
-      u.rate = 1.03;
+      if (!TTS || (!crew.ttsOn && !force)) { resolve(); return; }
+      const clean = cleanForSpeech(text);
       let done = false;
+      let safety = null;
       const finish = () => { if (!done) { done = true; clearTimeout(safety); resolve(); } };
-      const safety = setTimeout(finish, 2500 + clean.split(/\s+/).length * 450);
-      u.onend = finish;
-      u.onerror = finish;
+      const attempt = (voice, retry) => {
+        const u = new SpeechSynthesisUtterance(clean);
+        u.lang = (voice && voice.lang) || 'en-US';
+        if (voice) u.voice = voice;
+        u.rate = 1.03;
+        u.volume = 1;
+        u.onend = finish;
+        u.onerror = (e) => {
+          if (e.error === 'interrupted' || e.error === 'canceled') { finish(); return; }
+          const local = pickVoice(true);
+          if (retry && local && local !== voice) { attempt(local, false); return; } // online voice failed: use a device voice
+          if (!voiceWarned) {
+            voiceWarned = true;
+            push('system', `Couldn't play MEDIC's voice (${e.error || 'unknown error'}). Check your volume and that this tab isn't muted, then press 🔊 Test voice. Chrome, Edge and Safari support it.`);
+          }
+          finish();
+        };
+        window.__lastUtterance = u; // keep a reference: Chrome can garbage-collect it and skip onend
+        speechSynthesis.speak(u);
+      };
+      clearTimeout(safety);
+      safety = setTimeout(finish, 4000 + clean.split(/\s+/).length * 500);
       setPhase('speaking');
-      speechSynthesis.speak(u);
+      // Chrome drops a speak() issued right after cancel(), and can get stuck paused
+      const busySpeaking = speechSynthesis.speaking || speechSynthesis.pending;
+      if (busySpeaking) speechSynthesis.cancel();
+      speechSynthesis.resume();
+      setTimeout(() => attempt(pickVoice(), true), busySpeaking ? 150 : 0);
     });
+  }
+
+  function testVoice() {
+    if (!TTS) { push('system', 'This browser does not support speech output. Try Chrome, Edge or Safari.'); return; }
+    voiceWarned = false;
+    const v = pickVoice();
+    push('system', `Voice test using "${v ? v.name : 'browser default'}"${v && !v.localService ? ' (online voice)' : ''}.`);
+    speak(`Hello ${me().name}. This is MEDIC. If you can hear me, voice replies are working.`, { force: true }).then(() => setPhase('idle'));
   }
 
   /* ---------- message handling ---------- */
@@ -431,7 +470,17 @@ const Assistant = (() => {
     el('suggest').innerHTML = sugg.map((s) => `<button type="button" class="chip-btn">${esc(s)}</button>`).join('');
     el('suggest').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) handle(b.textContent); });
     el('srNote').textContent = SR ? 'Voice: your browser\'s built-in speech recognition (free).' : 'Voice input needs Chrome or Edge. You can still type.';
-    if (TTS) speechSynthesis.getVoices();
+    if (TTS) {
+      loadVoices();
+      if ('onvoiceschanged' in speechSynthesis) speechSynthesis.onvoiceschanged = loadVoices;
+    }
+    el('btnTestVoice').addEventListener('click', testVoice);
+    el('chat').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-say]');
+      if (!b || !state) return;
+      const m = state.chat[+b.dataset.say];
+      if (m) speak(m.text, { force: true }).then(() => { if (!call.active) setPhase('idle'); });
+    });
     renderEngine();
     renderChat();
     setPhase('idle');
