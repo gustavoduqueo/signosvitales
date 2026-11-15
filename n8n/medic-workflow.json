@@ -1,0 +1,139 @@
+{
+  "name": "MEDIC - Signos Vitales AI medical officer",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "medic",
+        "responseMode": "responseNode",
+        "options": {
+          "allowedOrigins": "*"
+        }
+      },
+      "id": "64059601-a703-470f-aae8-af5ac278c9b7",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "5c83f7ed-944a-4d58-b6c7-1b5594582a12"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.user_message }}",
+        "options": {
+          "systemMessage": "=You are MEDIC, the onboard AI medical officer of a crewed space mission. You talk with the astronaut by voice.\n\nRules:\n- Answer in English, in 1 to 3 short sentences that sound natural when read aloud. No markdown, lists, emojis or headings.\n- Use ONLY the health data below. Each indicator's status (Normal / Watch / Alert) was computed by the app's thresholds: never contradict it, never invent values, never diagnose.\n- For an Alert, give the single most important action first, then remind the astronaut to report it to the flight surgeon, keeping the signal delay to Earth in mind.\n- If the astronaut mentions an emergency (chest pain, can't breathe, fainting, heavy bleeding, thoughts of self-harm), tell them to alert the crew immediately and start the onboard emergency procedure.\n- Be warm and encouraging, especially about mood, sleep and isolation.\n\nAstronaut: {{ $json.body.astronaut }}\nHealth data (JSON): {{ JSON.stringify($json.body.health_summary) }}"
+        }
+      },
+      "id": "938710d3-dd6e-4f69-9058-fb5f353157cd",
+      "name": "MEDIC Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        260,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "model": "llama-3.3-70b-versatile",
+        "options": {
+          "temperature": 0.4,
+          "maxTokensToSample": 300
+        }
+      },
+      "id": "a63b3bd6-9969-4ad6-bc5f-4f03ce42a7d3",
+      "name": "Groq Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGroq",
+      "typeVersion": 1,
+      "position": [
+        180,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Webhook').item.json.body.session_id || 'default' }}",
+        "contextWindowLength": 10
+      },
+      "id": "2db0d335-a93b-4a61-9738-b9427dadc538",
+      "name": "Simple Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        360,
+        220
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { \"reply\": $json.output || (\"MEDIC AI error: \" + ($json.error || \"no output from the model\")) } }}",
+        "options": {}
+      },
+      "id": "15b57b65-178a-42e6-ac35-a5587e19193b",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        560,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "MEDIC Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "MEDIC Agent": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Groq Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "MEDIC Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Simple Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "MEDIC Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}

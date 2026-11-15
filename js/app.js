@@ -17,16 +17,20 @@ function renderHeader() {
   $('#chipDay').textContent = `Mission day ${missionDay()}`;
   $('#chipDelay').textContent = `📡 Earth delay ${env.delayLabel}`;
   $('#chipDelay').title = env.desc;
+  const m = me();
+  $('#userBox').innerHTML = `<span class="u-av">${m.avatar}</span><div class="u-txt"><b>${esc(m.name)}</b><small>${esc(m.role)}</small></div>
+    <button class="icon-btn" id="btnLock" title="Lock / switch astronaut" aria-label="Lock and switch astronaut">🔒</button>`;
+  $('#tabCrew').hidden = !canViewCrew();
   const score = readiness();
-  const st = score >= 85 ? 'green' : score >= 60 ? 'yellow' : 'red';
-  const label = { green: 'Mission ready', yellow: 'Needs attention', red: 'Act now' }[st];
-  $('#readiness').innerHTML = `<div class="ring st-${st}" style="--p:${score}"><span>${score}</span></div>
+  const st = score == null ? 'unknown' : score >= 85 ? 'green' : score >= 60 ? 'yellow' : 'red';
+  const label = { green: 'Mission ready', yellow: 'Needs attention', red: 'Act now', unknown: 'No data yet' }[st];
+  $('#readiness').innerHTML = `<div class="ring st-${st}" style="--p:${score || 0}"><span>${score == null ? '—' : score}</span></div>
     <div class="ring-txt"><small>Readiness</small><b>${label}</b></div>`;
   const lv = level();
   const inLv = state.xp % 250;
   $('#xpBox').innerHTML = `<div class="xp-top"><b>Lv ${lv}</b><small>${inLv}/250 XP · 🔥 ${streak()}d</small></div>
     <div class="bar"><i style="width:${(inLv / 250) * 100}%"></i></div>`;
-  $('#envSelect').value = state.env;
+  $('#envSelect').value = crew.env;
 }
 
 /* ---------- dashboard ---------- */
@@ -261,7 +265,7 @@ function renderLearn() {
   const hz = Object.values(HAZARDS).map((h) => `<div class="card hz-card"><h3>${h.icon} ${esc(h.name)}</h3><p>${esc(h.text)}</p></div>`).join('');
   const rows = INDICATORS.map((i) => `<tr><td><b>${esc(i.name)}</b><br><small class="muted">${SYSTEMS[i.system].icon} ${esc(SYSTEMS[i.system].name)}</small></td>
     <td>${esc(rangeText(i.id))}</td><td>${esc(i.measure)}</td><td>${esc(i.why)}</td></tr>`).join('');
-  const env = Object.entries(ENVIRONMENTS).map(([k, e]) => `<tr${k === state.env ? ' class="cur"' : ''}><td><b>${esc(e.name)}</b></td><td>${esc(e.gravity)}</td><td>${esc(e.delayLabel)}</td><td>~${e.radBaseline} mSv/day</td><td>${esc(e.desc)}</td></tr>`).join('');
+  const env = Object.entries(ENVIRONMENTS).map(([k, e]) => `<tr${k === crew.env ? ' class="cur"' : ''}><td><b>${esc(e.name)}</b></td><td>${esc(e.gravity)}</td><td>${esc(e.delayLabel)}</td><td>~${e.radBaseline} mSv/day</td><td>${esc(e.desc)}</td></tr>`).join('');
   $('#learnBody').innerHTML = `
     <div class="card intro"><h2>How Signos Vitales works</h2>
       <ol><li><b>Measure</b>: a daily routine reminds you which indicators to log: sleep, vitals, glucose, dosimeter, exercise and mood.</li>
@@ -289,14 +293,23 @@ function openModal(html) {
 function closeModal() { $('#modal').hidden = true; $('#modalBody').innerHTML = ''; }
 
 function openSettings() {
+  const m = me();
   openModal(`<h2>Settings</h2>
-    <label class="fld">Astronaut name / callsign<input id="setName" value="${esc(state.callsign)}" maxlength="40"></label>
+    <h3 class="sub">My profile · ${esc(m.role)}</h3>
+    <label class="fld">Name<input id="setName" value="${esc(m.name)}" maxlength="30"></label>
+    <div class="row2">
+      <label class="fld">Current PIN<input id="pinOld" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></label>
+      <label class="fld">New PIN (4–6 digits)<input id="pinNew" type="password" inputmode="numeric" maxlength="6" autocomplete="off"></label>
+    </div>
+    <p class="muted small">Leave the PIN fields empty to keep your current PIN.</p>
+    <h3 class="sub">Mission (shared by the whole crew)</h3>
     <label class="fld">AI webhook URL (n8n, optional)
-      <input id="setHook" type="url" placeholder="https://YOUR-INSTANCE.app.n8n.cloud/webhook/medic" value="${esc(state.webhookUrl)}"></label>
+      <input id="setHook" type="url" placeholder="https://YOUR-INSTANCE.app.n8n.cloud/webhook/medic" value="${esc(crew.webhookUrl)}"></label>
     <p class="muted small">MEDIC POSTs <code>{ user_message, health_summary, … }</code> and reads <code>reply</code> from the JSON response. Leave empty to use the offline rules. Setup steps are in the README.</p>
     <div class="row"><button class="btn small" id="btnTest">Test connection</button><span id="testOut" class="small"></span></div>
+    <p id="setErr" class="pin-err" role="alert"></p>
     <hr>
-    <div class="row between"><button class="btn small danger" id="btnReset">Reset demo data</button>
+    <div class="row between">${m.role === 'Commander' ? '<button class="btn small danger" id="btnReset">Reset demo crew</button>' : '<span></span>'}
       <div class="row"><button class="btn ghost" data-close>Cancel</button><button class="btn primary" id="btnSaveSet">Save</button></div></div>`);
   $('#btnTest').onclick = async () => {
     const url = $('#setHook').value.trim();
@@ -306,23 +319,40 @@ function openSettings() {
     $('#testOut').className = `small txt-${r.ok ? 'green' : 'red'}`;
     $('#testOut').textContent = r.ok ? `✔ ${r.text}` : `✖ ${r.text}`;
   };
-  $('#btnSaveSet').onclick = () => {
-    state.callsign = $('#setName').value.trim() || 'Astronaut';
-    state.webhookUrl = $('#setHook').value.trim();
+  $('#btnSaveSet').onclick = async () => {
+    const err = (t) => { $('#setErr').textContent = t; };
+    const name = $('#setName').value.trim();
+    if (!name) { err('Enter a name.'); return; }
+    if (crew.members.some((x) => x.id !== currentId && x.name.toLowerCase() === name.toLowerCase())) { err('Another crew member already has that name.'); return; }
+    const oldPin = $('#pinOld').value;
+    const newPin = $('#pinNew').value;
+    if (oldPin || newPin) {
+      if (!/^\d{4,6}$/.test(newPin)) { err('The new PIN must be 4 to 6 digits.'); return; }
+      try {
+        if (!(await verifyPin(currentId, oldPin))) { err('Your current PIN is not correct.'); return; }
+        await changePin(currentId, newPin);
+      } catch (e) { err(e.message); return; }
+    }
+    member(currentId).name = name;
+    crew.webhookUrl = $('#setHook').value.trim();
     save();
     closeModal();
     Assistant.renderEngine();
     renderAll();
-    toast('Settings saved');
+    toast(oldPin || newPin ? 'Settings saved · PIN changed' : 'Settings saved');
   };
-  $('#btnReset').onclick = () => {
-    if (!confirm('Replace all readings, XP and chat with fresh demo data?')) return;
-    resetDemo();
-    ui.system = null;
-    closeModal();
-    renderAll();
-    toast('Demo data reset');
-  };
+  const resetBtn = $('#btnReset');
+  if (resetBtn) {
+    resetBtn.onclick = async () => {
+      if (!confirm('Delete every crew profile and all health data on this device, and restore the 4-person demo crew?')) return;
+      closeModal();
+      if (Assistant.isOnCall()) Assistant.endCall();
+      await resetDemo();
+      App.onLock();
+      Auth.show();
+      toast('Demo crew restored');
+    };
+  }
 }
 
 function openReport() {
@@ -353,6 +383,7 @@ function toast(msg) {
 
 /* ---------- tabs & render ---------- */
 function showTab(name) {
+  if (name === 'crew' && !canViewCrew()) name = 'dashboard';
   ui.tab = name;
   if (location.hash.slice(1) !== name) history.replaceState(null, '', `#${name}`);
   renderHeader();
@@ -363,25 +394,52 @@ function showTab(name) {
 }
 
 function renderTab() {
+  if (!state) return;
   if (ui.tab === 'dashboard') renderDashboard();
   else if (ui.tab === 'checkin') renderCheckin();
   else if (ui.tab === 'trends') renderTrends();
   else if (ui.tab === 'learn') renderLearn();
+  else if (ui.tab === 'crew') CrewView.render();
   else if (ui.tab === 'assistant') Assistant.renderChat();
 }
 
 function renderAll() {
+  if (!state) return;
   renderHeader();
   if (ui.tab !== 'checkin') renderTab(); // don't wipe a half-filled form
 }
 
-const App = { refresh: renderAll, toast };
+function tabFromHash() {
+  const h = location.hash.slice(1);
+  return h && $(`#tab-${CSS.escape(h)}`) ? h : 'dashboard';
+}
 
-function init() {
+const App = {
+  refresh: renderAll,
+  toast,
+  onLogin() {
+    ui.system = null;
+    ui.indicator = null;
+    Assistant.renderEngine();
+    showTab(tabFromHash());
+    toast(`Welcome, ${me().name}`);
+  },
+  onLock() {
+    closeModal();
+    $('#toasts').innerHTML = '';
+    ui.system = null;
+    ui.indicator = null;
+    // clear rendered health data so nothing from the previous astronaut stays in the page
+    ['#detail', '#tiles', '#alerts', '#routine', '#badges', '#legend', '#checkinForm', '#trendStats', '#miniGrid', '#chat', '#crewBody', '#userBox', '#readiness', '#xpBox']
+      .forEach((sel) => { const el = $(sel); if (el) el.innerHTML = ''; });
+  },
+};
+
+function wireEvents() {
   $('#envSelect').innerHTML = Object.entries(ENVIRONMENTS).map(([k, e]) => `<option value="${k}">${esc(e.name)}</option>`).join('');
   $('#envSelect').addEventListener('change', (e) => {
-    state.env = e.target.value;
-    save();
+    crew.env = e.target.value;
+    saveCrew();
     renderAll();
     const env = envObj();
     toast(`${env.name}: Earth delay ${env.delayLabel}, usual radiation ~${env.radBaseline} mSv/day`);
@@ -389,6 +447,8 @@ function init() {
 
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => showTab(b.dataset.tab)));
   document.addEventListener('click', (e) => {
+    if (!state) return;
+    if (e.target.closest('#btnLock')) { Auth.lock(); return; }
     const g = e.target.closest('[data-goto]');
     if (g) { showTab(g.dataset.goto); return; }
     if (e.target.closest('[data-close]') || e.target.id === 'modal') { closeModal(); return; }
@@ -401,14 +461,14 @@ function init() {
   });
   $('#bodySvg').addEventListener('click', (e) => {
     const g = e.target.closest('[data-system]');
-    if (!g) return;
+    if (!g || !state) return;
     ui.system = g.dataset.system;
     renderBodyMap();
     renderDetail();
   });
   $('#bodySvg').addEventListener('keydown', (e) => {
     const g = e.target.closest('[data-system]');
-    if (g && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); ui.system = g.dataset.system; renderBodyMap(); renderDetail(); }
+    if (g && state && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); ui.system = g.dataset.system; renderBodyMap(); renderDetail(); }
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !$('#modal').hidden) closeModal(); });
 
@@ -421,11 +481,22 @@ function init() {
   $('#btnSync').addEventListener('click', simulateWearable);
   $('#btnSettings').addEventListener('click', openSettings);
   $('#btnReport').addEventListener('click', openReport);
-
-  Assistant.init();
-  const fromHash = location.hash.slice(1);
-  if ($(`#tab-${CSS.escape(fromHash)}`)) showTab(fromHash); else renderAll();
-  window.addEventListener('hashchange', () => { const h = location.hash.slice(1); if ($(`#tab-${CSS.escape(h)}`)) showTab(h); });
+  window.addEventListener('hashchange', () => { if (state) showTab(tabFromHash()); });
 }
 
-init();
+async function boot() {
+  try {
+    await initStore();
+  } catch (e) {
+    document.body.innerHTML = `<div class="fatal"><h1>Signos Vitales</h1><p>${esc(e.message)}</p></div>`;
+    return;
+  }
+  wireEvents();
+  Auth.init();
+  CrewView.init();
+  Assistant.init();
+  if (state) App.onLogin();
+  else Auth.show();
+}
+
+boot();

@@ -25,7 +25,7 @@ const Assistant = (() => {
 
   function renderChat() {
     const box = el('chat');
-    if (!box) return;
+    if (!box || !state) return;
     if (!state.chat.length) {
       box.innerHTML = `<div class="chat-empty">
         <p><strong>MEDIC</strong> is your onboard medical officer. On a Mars mission the ground is up to 22 minutes away, so MEDIC answers right away using your own health data.</p>
@@ -35,7 +35,7 @@ const Assistant = (() => {
     const tagLabel = { ai: 'AI', offline: 'Offline rules', logged: 'Logged' };
     box.innerHTML = state.chat.map((m) => {
       if (m.role === 'system') return `<div class="msg system">${esc(m.text)}</div>`;
-      const who = m.role === 'user' ? esc(state.callsign) : 'MEDIC';
+      const who = m.role === 'user' ? esc(me().name) : 'MEDIC';
       const tag = m.tag ? `<span class="tag tag-${m.tag}">${tagLabel[m.tag] || m.tag}</span>` : '';
       return `<div class="msg ${m.role}"><div class="who">${who} ${tag}</div><div class="bubble">${esc(m.text).replace(/\n/g, '<br>')}</div></div>`;
     }).join('');
@@ -81,9 +81,12 @@ const Assistant = (() => {
     el('btnCall').classList.add('end');
     push('system', 'Call started with MEDIC.');
     const al = buildAlerts();
-    const greet = `MEDIC online. Hello ${state.callsign}. Your readiness score is ${readiness()} out of 100` +
-      (al.length ? `, and I see ${al.length} item${al.length > 1 ? 's' : ''} to review, starting with ${al[0].title.split(':')[0].toLowerCase()}.` : ', and everything is in range.') +
-      ' How are you feeling today?';
+    const score = readiness();
+    const greet = score == null
+      ? `MEDIC online. Hello ${me().name}. I don't have any readings for you yet. Tell me a value, like "heart rate 70", or ask me anything. How are you feeling today?`
+      : `MEDIC online. Hello ${me().name}. Your readiness score is ${score} out of 100` +
+        (al.length ? `, and I see ${al.length} item${al.length > 1 ? 's' : ''} to review, starting with ${al[0].title.split(':')[0].toLowerCase()}.` : ', and everything is in range.') +
+        ' How are you feeling today?';
     push('assistant', greet, 'offline');
     speak(greet).then(() => { if (call.active) listen(); });
   }
@@ -154,7 +157,7 @@ const Assistant = (() => {
 
   function speak(text) {
     return new Promise((resolve) => {
-      if (!TTS || !state.ttsOn) { resolve(); return; }
+      if (!TTS || !crew.ttsOn) { resolve(); return; }
       speechSynthesis.cancel();
       const clean = text.replace(/[*_#`]/g, '').replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
         .replace(/SpO₂/g, 'S P O 2').replace(/mg\/dL/g, 'milligrams per deciliter').replace(/mmHg/g, 'millimeters of mercury')
@@ -177,7 +180,7 @@ const Assistant = (() => {
   /* ---------- message handling ---------- */
   async function handle(text) {
     text = text.trim();
-    if (!text || busy) return;
+    if (!text || busy || !state) return;
     busy = true;
     push('user', text);
     setPhase('thinking');
@@ -193,7 +196,7 @@ const Assistant = (() => {
           App.refresh();
           if (res.xp) App.toast(`+${res.xp} XP`);
         }
-      } else if (state.webhookUrl) {
+      } else if (crew.webhookUrl) {
         try {
           reply = await askAI(text);
           tag = 'ai';
@@ -220,14 +223,14 @@ const Assistant = (() => {
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort(), 25000);
     try {
-      const res = await fetch(state.webhookUrl, {
+      const res = await fetch(crew.webhookUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         signal: ctrl.signal,
         body: JSON.stringify({
           user_message: text,
           session_id: state.sessionId,
-          astronaut: state.callsign,
+          astronaut: `${me().name} (${me().role})`,
           health_summary: healthSummary(),
           recent_chat: state.chat.filter((m) => m.role !== 'system').slice(-8).map((m) => ({ role: m.role, text: m.text })),
         }),
@@ -265,15 +268,15 @@ const Assistant = (() => {
   }
 
   async function testConnection(url) {
-    const prev = state.webhookUrl;
-    state.webhookUrl = url;
+    const prev = crew.webhookUrl;
+    crew.webhookUrl = url;
     try {
       const r = await askAI('Connection test from Signos Vitales. Reply with one short sentence.');
       return { ok: true, text: r };
     } catch (e) {
       return { ok: false, text: e.message };
     } finally {
-      state.webhookUrl = prev;
+      crew.webhookUrl = prev;
     }
   }
 
@@ -369,6 +372,7 @@ const Assistant = (() => {
     const al = buildAlerts();
     const reds = al.filter((a) => a.level === 'red').length;
     const yellows = al.length - reds;
+    if (readiness() == null) return 'I don\'t have any readings for you yet. Start with the daily check-in, or tell me a value like "heart rate 70" or "slept 7 hours".';
     let txt = `Readiness ${readiness()}/100 on mission day ${missionDay()}.`;
     if (!al.length) return txt + ' All indicators are within normal range. Keep following your routine.';
     txt += ` ${reds ? `${reds} alert${reds > 1 ? 's' : ''}` : ''}${reds && yellows ? ' and ' : ''}${yellows ? `${yellows} item${yellows > 1 ? 's' : ''} to watch` : ''}.`;
@@ -384,7 +388,7 @@ const Assistant = (() => {
       return 'This may be an emergency. Alert your crewmates now and start the onboard emergency medical procedure. Then contact the flight surgeon: the signal delay to Earth is ' + env.delayLabel + ', so do not wait for an answer before acting.';
     }
     if (/^(hi|hello|hey|good (morning|afternoon|evening))\b/.test(t.trim()) && t.length < 30) {
-      return `Hello ${state.callsign}. I'm MEDIC, your onboard medical officer. Ask "how am I doing?", ask about any indicator, or log a value like "heart rate 70".`;
+      return `Hello ${me().name}. I'm MEDIC, your onboard medical officer. Ask "how am I doing?", ask about any indicator, or log a value like "heart rate 70".`;
     }
     if (/surgeon|doctor|ground|mission control|houston|earth/.test(t)) {
       return `The ground is ${env.delayLabel} away each way from ${env.short}. Open the dashboard and press "Report to flight surgeon" to send a full summary; I can help you in the meantime.`;
@@ -417,11 +421,11 @@ const Assistant = (() => {
       i.value = '';
       handle(v);
     });
-    el('btnClearChat').addEventListener('click', () => { state.chat = []; save(); renderChat(); });
+    el('btnClearChat').addEventListener('click', () => { if (!state) return; state.chat = []; save(); renderChat(); });
     const tts = el('ttsToggle');
-    tts.checked = !!state.ttsOn;
+    tts.checked = !!crew.ttsOn;
     tts.disabled = !TTS;
-    tts.addEventListener('change', () => { state.ttsOn = tts.checked; save(); if (!tts.checked && TTS) speechSynthesis.cancel(); });
+    tts.addEventListener('change', () => { crew.ttsOn = tts.checked; saveCrew(); if (!tts.checked && TTS) speechSynthesis.cancel(); });
     const sugg = ['How am I doing today?', 'Why is my sleep flagged?', 'Heart rate 72, blood pressure 118 over 76', 'What should I do during a solar particle event?', 'I feel lonely and stressed'];
     el('suggest').innerHTML = sugg.map((s) => `<button type="button" class="chip-btn">${esc(s)}</button>`).join('');
     el('suggest').addEventListener('click', (e) => { const b = e.target.closest('button'); if (b) handle(b.textContent); });
@@ -435,7 +439,7 @@ const Assistant = (() => {
   function renderEngine() {
     const n = el('engineNote');
     if (!n) return;
-    n.innerHTML = state.webhookUrl
+    n.innerHTML = crew.webhookUrl
       ? '🟢 Answers from: <b>AI via n8n</b>. Health status always comes from the app\'s thresholds.'
       : '⚪ Answers from: <b>offline rules</b>. Add an n8n webhook in ⚙ Settings to use a free LLM.';
   }

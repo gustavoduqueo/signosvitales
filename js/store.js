@@ -1,7 +1,29 @@
 'use strict';
-/* State, persistence, simulated history and all health computations. */
+/* Crew, authentication, persistence, simulated history and all health computations.
 
-const STORE_KEY = 'signosvitales.state.v1';
+   Storage model (onboard crew tablet, works offline):
+   - CREW_KEY: shared mission settings + crew roster (name, role, avatar, PIN salt + PBKDF2 hash)
+   - MEMBER_PREFIX + id: one astronaut's health data (readings, XP, chat with MEDIC)
+   - SESSION_KEY (sessionStorage): who is logged in on this tab
+   Global `state` always holds the logged-in astronaut's data; `crew` holds the shared part. */
+
+const CREW_KEY = 'signosvitales.crew.v2';
+const MEMBER_PREFIX = 'signosvitales.member.v2.';
+const SESSION_KEY = 'signosvitales.session.v2';
+const LEGACY_KEY = 'signosvitales.state.v1';
+
+const ROLES = ['Commander', 'Flight Engineer', 'Mission Specialist', 'Crew Medical Officer'];
+const CREW_VIEW_ROLES = ['Commander', 'Crew Medical Officer'];
+const AVATARS = ['🧑‍🚀', '👩‍🚀', '👨‍🚀', '🚀', '🛰️', '🌕', '🪐', '⭐'];
+const PIN_ITERATIONS = 100000;
+
+/* Demo crew: fictional astronauts, each with a different health story. */
+const DEMO_CREW = [
+  { name: 'Rivera', role: 'Commander', avatar: '🧑‍🚀', pin: '1111', scenario: 'sleep', seed: 20261004, xp: 1180 },
+  { name: 'Okafor', role: 'Flight Engineer', avatar: '👩🏾‍🚀', pin: '2222', scenario: 'healthy', seed: 777, xp: 1640 },
+  { name: 'Tanaka', role: 'Mission Specialist', avatar: '👨🏻‍🚀', pin: '3333', scenario: 'fever', seed: 4242, xp: 920 },
+  { name: 'Haddad', role: 'Crew Medical Officer', avatar: '👩🏽‍🚀', pin: '4444', scenario: 'bone', seed: 9001, xp: 1310 },
+];
 
 /* ---------- dates ---------- */
 function dateStr(d) {
@@ -34,75 +56,209 @@ function mulberry32(a) {
   };
 }
 
-function generateHistory(envKey) {
+function generateHistory(envKey, scenario = 'sleep', seed = 20261004) {
   const env = ENVIRONMENTS[envKey] || ENVIRONMENTS.transit;
-  const rng = mulberry32(20261004);
+  const rng = mulberry32(seed);
   const n = (sd) => (rng() + rng() + rng() - 1.5) * 2 * sd; // ~normal noise
   const r = (v, d = 0) => +v.toFixed(d);
   const readings = [];
   const t0 = today();
   for (let i = 0; i < 30; i++) {
     const v = {};
-    v.hr = Math.round(63 + (i >= 22 ? (i - 22) * 2 : 0) + n(2));          // creeping up in the last week
+    // healthy baseline
+    v.hr = Math.round(61 + n(2));
     v.sbp = Math.round(117 + n(4));
     v.dbp = Math.round(75 + n(3));
-    v.spo2 = Math.min(99, Math.round(97 + n(0.8))); if (i === 19) v.spo2 = 93;
-    v.temp = r(36.8 + n(0.15), 1); if (i === 26) v.temp = 37.8;              // brief low-grade fever
-    v.glucose = Math.round(88 + n(6)); if (i >= 27) v.glucose = 90 + i - 27;
-    v.sleep = r(i < 20 ? 7.4 + n(0.4) : 7.0 - (i - 20) * 0.15 + n(0.2), 1);  // sleep debt building
-    if (i === 29) v.sleep = 5.6;
-    v.mood = i < 22 ? (rng() < 0.75 ? 4 : 5) : (rng() < 0.6 ? 3 : 4); if (i === 29) v.mood = 3;
-    v.exercise = i % 9 === 4 ? 75 : Math.round((125 + n(10)) / 5) * 5;
+    v.spo2 = Math.min(99, Math.round(97 + n(0.8)));
+    v.temp = r(36.8 + n(0.15), 1);
+    v.glucose = Math.round(88 + n(5));
+    v.sleep = r(7.5 + n(0.35), 1);
+    v.mood = rng() < 0.7 ? 4 : 5;
+    v.exercise = Math.round((130 + n(8)) / 5) * 5;
+
+    if (scenario === 'sleep') { // sleep debt, mood dip, resting HR creeping up
+      v.hr = Math.round(63 + (i >= 22 ? (i - 22) * 2 : 0) + n(2));
+      if (i === 19) v.spo2 = 93;
+      if (i === 26) v.temp = 37.8;
+      if (i >= 27) v.glucose = 90 + i - 27;
+      v.sleep = r(i < 20 ? 7.4 + n(0.4) : 7.0 - (i - 20) * 0.15 + n(0.2), 1);
+      if (i === 29) v.sleep = 5.6;
+      v.mood = i < 22 ? (rng() < 0.75 ? 4 : 5) : (rng() < 0.6 ? 3 : 4);
+      if (i === 29) v.mood = 3;
+      v.exercise = i % 9 === 4 ? 75 : Math.round((125 + n(10)) / 5) * 5;
+    } else if (scenario === 'fever') { // infection starting in the last 3 days
+      if (i >= 27) { v.temp = [37.6, 38.1, 38.4][i - 27]; v.hr = [82, 91, 97][i - 27]; }
+      if (i === 29) { v.sleep = 6.2; v.mood = 3; v.spo2 = 95; v.exercise = 40; }
+    } else if (scenario === 'bone') { // skipping exercise, blood pressure rising
+      if (i >= 18) v.exercise = Math.round((i >= 25 ? 55 : 85) + n(8));
+      if (i >= 25) { v.sbp = Math.round(133 + n(2)); v.dbp = Math.round(83 + n(1.5)); }
+    }
+
     v.rad = r(env.radBaseline * (1 + n(0.08)), 2);
-    if (i === 23) v.rad = r(env.radBaseline * 4.2, 2);                          // solar particle event
+    if (i === 23) v.rad = r(env.radBaseline * (4.1 + n(0.15)), 2);               // solar particle event (whole crew)
     if (i === 24) v.rad = r(env.radBaseline * 2.2, 2);
-    if (i === 11) delete v.glucose;                                           // a missed measurement
+    if (i === 11 + (seed % 5)) delete v.glucose;                                 // a missed measurement
     readings.push({ date: addDays(t0, i - 30), values: v });
   }
   return readings;
 }
 
-function seedState(envKey = 'transit', keep = {}) {
-  return {
-    v: 1,
-    env: envKey,
-    callsign: keep.callsign || 'Cmdr. Rivera',
-    missionStart: addDays(today(), -41),
-    readings: generateHistory(envKey),
-    xp: 1180,
-    webhookUrl: keep.webhookUrl || '',
-    ttsOn: keep.ttsOn !== undefined ? keep.ttsOn : true,
-    sessionId: 'sv-' + Math.random().toString(36).slice(2, 10),
-    chat: [],
-  };
+/* ---------- storage helpers (fall back to memory if localStorage is blocked) ---------- */
+const memStore = {};
+function lsGet(k) {
+  if (k in memStore) return memStore[k];
+  try { const raw = localStorage.getItem(k); return raw ? JSON.parse(raw) : null; } catch (e) { return null; }
+}
+function lsSet(k, v) {
+  memStore[k] = v;
+  try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) { /* memory only */ }
+}
+function lsDel(k) {
+  delete memStore[k];
+  try { localStorage.removeItem(k); } catch (e) { /* ignore */ }
 }
 
-function loadState() {
-  try {
-    const raw = localStorage.getItem(STORE_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw);
-    if (s && s.v === 1 && Array.isArray(s.readings) && ENVIRONMENTS[s.env]) {
-      if (!Array.isArray(s.chat)) s.chat = [];
-      return s;
-    }
-  } catch (e) { /* storage unavailable or corrupt: fall back to demo data */ }
+/* ---------- PIN hashing (PBKDF2-SHA256, random salt per astronaut) ---------- */
+const toHex = (bytes) => [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+const fromHex = (hex) => new Uint8Array(hex.match(/.{2}/g).map((h) => parseInt(h, 16)));
+function randomHex(n) { const a = new Uint8Array(n); crypto.getRandomValues(a); return toHex(a); }
+
+async function hashPin(pin, saltHex) {
+  if (!(window.crypto && crypto.subtle)) {
+    throw new Error('PIN login needs a secure page: open the app over HTTPS or http://localhost.');
+  }
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(pin), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: fromHex(saltHex), iterations: PIN_ITERATIONS, hash: 'SHA-256' }, key, 256);
+  return toHex(new Uint8Array(bits));
+}
+
+/* ---------- crew & session ---------- */
+let crew = null;      // shared: env, missionStart, webhookUrl, ttsOn, members[]
+let state = null;     // logged-in astronaut's data: readings, xp, chat, sessionId
+let currentId = null;
+
+function newMemberData(readings = [], xp = 0) {
+  return { readings, xp, chat: [], sessionId: 'sv-' + randomHex(4) };
+}
+
+function member(id) { return crew && crew.members.find((m) => m.id === id); }
+function me() { return member(currentId) || { name: 'Astronaut', role: '', avatar: '🧑‍🚀' }; }
+function canViewCrew() { return !!member(currentId) && CREW_VIEW_ROLES.includes(member(currentId).role); }
+
+function saveCrew() { lsSet(CREW_KEY, crew); }
+function save() {
+  saveCrew();
+  if (currentId && state) lsSet(MEMBER_PREFIX + currentId, state);
+}
+
+async function createMember({ name, role, avatar, pin, demo }, data) {
+  const id = 'm' + randomHex(6);
+  const salt = randomHex(16);
+  const hash = await hashPin(pin, salt);
+  const m = { id, name, role, avatar, salt, hash, demo: !!demo, created: today() };
+  crew.members.push(m);
+  lsSet(MEMBER_PREFIX + id, data || newMemberData());
+  saveCrew();
+  return m;
+}
+
+async function seedCrew(keep = {}) {
+  crew = {
+    v: 2,
+    env: ENVIRONMENTS[keep.env] ? keep.env : 'transit',
+    missionStart: addDays(today(), -41),
+    webhookUrl: keep.webhookUrl || '',
+    ttsOn: keep.ttsOn !== undefined ? keep.ttsOn : true,
+    members: [],
+  };
+  for (const d of DEMO_CREW) {
+    await createMember({ ...d, demo: true }, newMemberData(generateHistory(crew.env, d.scenario, d.seed), d.xp));
+  }
+}
+
+async function initStore() {
+  crew = lsGet(CREW_KEY);
+  if (!crew || crew.v !== 2 || !Array.isArray(crew.members)) {
+    const legacy = lsGet(LEGACY_KEY); // single-astronaut version: keep its settings
+    await seedCrew(legacy ? { env: legacy.env, webhookUrl: legacy.webhookUrl, ttsOn: legacy.ttsOn } : {});
+    lsDel(LEGACY_KEY);
+  }
+  if (!ENVIRONMENTS[crew.env]) crew.env = 'transit';
+  let sid = null;
+  try { sid = sessionStorage.getItem(SESSION_KEY); } catch (e) { /* ignore */ }
+  if (sid && member(sid)) openMember(sid);
+}
+
+function loadMemberData(id) {
+  const d = lsGet(MEMBER_PREFIX + id);
+  if (d && Array.isArray(d.readings)) {
+    if (!Array.isArray(d.chat)) d.chat = [];
+    if (!d.sessionId) d.sessionId = 'sv-' + randomHex(4);
+    if (typeof d.xp !== 'number') d.xp = 0;
+    return d;
+  }
+  return newMemberData();
+}
+
+function openMember(id) {
+  currentId = id;
+  state = loadMemberData(id);
+  try { sessionStorage.setItem(SESSION_KEY, id); } catch (e) { /* ignore */ }
+}
+
+function closeMember() {
+  if (currentId && state) save();
+  currentId = null;
+  state = null;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
+}
+
+async function verifyPin(id, pin) {
+  const m = member(id);
+  return !!m && (await hashPin(pin, m.salt)) === m.hash;
+}
+
+async function changePin(id, newPin) {
+  const m = member(id);
+  m.salt = randomHex(16);
+  m.hash = await hashPin(newPin, m.salt);
+  saveCrew();
+}
+
+function removeMember(id) {
+  crew.members = crew.members.filter((m) => m.id !== id);
+  lsDel(MEMBER_PREFIX + id);
+  saveCrew();
+}
+
+async function resetDemo() {
+  const keep = { env: crew.env, webhookUrl: crew.webhookUrl, ttsOn: crew.ttsOn };
+  crew.members.forEach((m) => lsDel(MEMBER_PREFIX + m.id));
+  currentId = null;
+  state = null;
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) { /* ignore */ }
+  await seedCrew(keep);
+}
+
+/* Run fn() as if `id` were logged in (used by the crew overview). Synchronous only. */
+function withMember(id, fn) {
+  if (id === currentId) return fn();
+  const prevState = state;
+  const prevId = currentId;
+  state = loadMemberData(id);
+  currentId = id;
+  try { return fn(); } finally { state = prevState; currentId = prevId; }
+}
+
+function lastCheckinDate() {
+  const rs = sortedReadings();
+  for (let i = rs.length - 1; i >= 0; i--) if (Object.keys(rs[i].values).length) return rs[i].date;
   return null;
 }
 
-let state = loadState() || seedState();
-
-function save() {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify(state)); } catch (e) { /* ignore */ }
-}
-
-function resetDemo() {
-  state = seedState(state.env, { callsign: state.callsign, webhookUrl: state.webhookUrl, ttsOn: state.ttsOn });
-  save();
-}
-
 /* ---------- lookups ---------- */
-function envObj() { return ENVIRONMENTS[state.env] || ENVIRONMENTS.transit; }
+function envObj() { return ENVIRONMENTS[crew && crew.env] || ENVIRONMENTS.transit; }
 function getReading(date) { return state.readings.find((r) => r.date === date); }
 function sortedReadings() { return [...state.readings].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)); }
 
@@ -177,7 +333,7 @@ function rangeText(id) {
   return `${g[0]}–${g[1]}${u}`;
 }
 
-function missionDay() { return daysBetween(state.missionStart, today()) + 1; }
+function missionDay() { return daysBetween(crew.missionStart, today()) + 1; }
 
 function missionDose() {
   const logged = state.readings.filter((r) => r.values.rad != null);
@@ -186,14 +342,16 @@ function missionDose() {
   return sum + unlogged * envObj().radBaseline; // days without a reading assume the local baseline
 }
 
-function readiness() {
+function readiness() { // null when the astronaut has no readings yet
   let s = 100;
+  let any = false;
   INDICATORS.forEach((i) => {
     const st = indStatus(i.id);
+    if (st !== 'unknown') any = true;
     if (st === 'yellow') s -= 8;
     if (st === 'red') s -= 20;
   });
-  return Math.max(0, s);
+  return any ? Math.max(0, s) : null;
 }
 
 function hasData(d) { const r = getReading(d); return !!r && Object.keys(r.values).length > 0; }
@@ -326,9 +484,9 @@ function surgeonReport() {
   const env = envObj();
   const lines = [];
   lines.push('CREW HEALTH REPORT: SIGNOS VITALES');
-  lines.push(`Astronaut: ${state.callsign}`);
+  lines.push(`Astronaut: ${me().name} (${me().role})`);
   lines.push(`Mission: ${env.name} · Day ${missionDay()} · ${today()}`);
-  lines.push(`Readiness score: ${readiness()}/100`);
+  lines.push(`Readiness score: ${readiness() == null ? 'no data' : readiness() + '/100'}`);
   lines.push(`Mission radiation dose: ${missionDose().toFixed(1)} mSv`);
   lines.push('');
   lines.push('LATEST INDICATORS');
