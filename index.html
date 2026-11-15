@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Signos Vitales · Astronaut Health Monitor</title>
+  <meta name="description" content="Self-assessment health monitoring for astronauts on long-duration missions. NASA Space Apps Challenge 2026.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🫀</text></svg>">
+  <link rel="stylesheet" href="css/styles.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js" defer></script>
+  <script src="js/data.js" defer></script>
+  <script src="js/store.js" defer></script>
+  <script src="js/charts.js" defer></script>
+  <script src="js/assistant.js" defer></script>
+  <script src="js/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 32 32"><path d="M2 17h7l3-7 5 14 3-9 2 2h8" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </span>
+      <div><strong>Signos Vitales</strong><small>Astronaut Health Monitor</small></div>
+    </div>
+    <div class="mission">
+      <label class="env"><span>Mission</span><select id="envSelect" aria-label="Mission environment"></select></label>
+      <span class="chip" id="chipDay"></span>
+      <span class="chip" id="chipDelay"></span>
+    </div>
+    <div class="me">
+      <div class="readiness" id="readiness"></div>
+      <div class="xp" id="xpBox"></div>
+      <button class="icon-btn" id="btnSettings" aria-label="Settings" title="Settings">⚙</button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Sections">
+    <button data-tab="dashboard" class="active">🩺 Dashboard</button>
+    <button data-tab="checkin">📝 Check-in</button>
+    <button data-tab="trends">📈 Trends</button>
+    <button data-tab="assistant">🎧 AI Medical Officer</button>
+    <button data-tab="learn">📚 Learn</button>
+  </nav>
+
+  <main>
+    <!-- DASHBOARD -->
+    <section id="tab-dashboard" class="tab active">
+      <div class="grid dash-top">
+        <div class="card body-card">
+          <div class="card-h"><h2>Body status</h2><span class="muted small">Tap a body system</span></div>
+          <div class="body-wrap">
+            <svg id="bodySvg" class="body-svg" viewBox="0 0 220 440" role="group" aria-label="Astronaut body map">
+              <ellipse class="halo" data-system="radiation" cx="110" cy="222" rx="104" ry="214" tabindex="0" aria-label="Radiation exposure"/>
+              <g data-system="musculo" tabindex="0" aria-label="Bones and muscles">
+                <rect x="34" y="100" width="24" height="136" rx="12" transform="rotate(8 46 100)"/>
+                <rect x="162" y="100" width="24" height="136" rx="12" transform="rotate(-8 174 100)"/>
+                <rect x="70" y="246" width="34" height="172" rx="15"/>
+                <rect x="116" y="246" width="34" height="172" rx="15"/>
+              </g>
+              <g data-system="metabolic" tabindex="0" aria-label="Metabolism"><rect x="64" y="180" width="92" height="72" rx="20"/></g>
+              <g data-system="resp" tabindex="0" aria-label="Respiratory"><rect x="60" y="98" width="100" height="86" rx="26"/></g>
+              <g data-system="immune" tabindex="0" aria-label="Immune and temperature"><rect x="95" y="74" width="30" height="28" rx="9"/></g>
+              <g data-system="brain" tabindex="0" aria-label="Brain and behavior"><circle cx="110" cy="44" r="32"/></g>
+              <g data-system="cardio" tabindex="0" aria-label="Cardiovascular"><path d="M120 124 c-4 -9 -20 -7 -18 5 c2 9 18 19 18 19 c0 0 16 -10 18 -19 c2 -12 -14 -14 -18 -5z"/></g>
+            </svg>
+            <ul class="legend" id="legend"></ul>
+          </div>
+        </div>
+        <div class="card detail-card" id="detail"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-h"><h2>Latest indicators</h2><span class="muted small" id="tilesNote"></span></div>
+        <div class="tiles" id="tiles"></div>
+      </div>
+
+      <div class="grid dash-bottom">
+        <div class="card">
+          <div class="card-h"><h2>Alerts &amp; actions</h2><button class="btn small" id="btnReport">📡 Report to flight surgeon</button></div>
+          <div id="alerts"></div>
+        </div>
+        <div class="card">
+          <div class="card-h"><h2>Today's routine</h2><button class="btn primary small" data-goto="checkin">Start check-in</button></div>
+          <ul class="routine" id="routine"></ul>
+          <h3 class="sub">Achievements</h3>
+          <div class="badges" id="badges"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- CHECK-IN -->
+    <section id="tab-checkin" class="tab">
+      <div class="card">
+        <div class="card-h"><h2>Daily check-in</h2><button class="btn small" id="btnSync" type="button">⌚ Sync wearable (simulated)</button></div>
+        <p class="muted">Log what you measured today. Each field turns green, yellow or red as you type. You can also log values by voice: <i>"heart rate 72, blood pressure 118 over 76"</i> with MEDIC.</p>
+        <form id="checkinForm" novalidate></form>
+      </div>
+    </section>
+
+    <!-- TRENDS -->
+    <section id="tab-trends" class="tab">
+      <div class="card">
+        <div class="chips" id="trendChips"></div>
+        <div class="card-h trend-h">
+          <h2 id="trendTitle"></h2>
+          <div class="seg" id="trendRange"><button data-days="7">7d</button><button data-days="14">14d</button><button data-days="30">30d</button></div>
+        </div>
+        <div class="chart-box big"><canvas id="trendChart"></canvas></div>
+        <div class="stats" id="trendStats"></div>
+        <p class="muted small" id="trendWhy"></p>
+      </div>
+      <h2 class="sec-title">All indicators</h2>
+      <div class="mini-grid" id="miniGrid"></div>
+    </section>
+
+    <!-- ASSISTANT -->
+    <section id="tab-assistant" class="tab">
+      <div class="grid assist">
+        <div class="card call-card" id="callCard" data-phase="idle">
+          <div class="avatar"><span>MEDIC</span></div>
+          <div class="wave" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="call-status" id="callStatus">Ready</div>
+          <div class="call-timer" id="callTimer">00:00</div>
+          <div class="live-caption" id="liveCaption" hidden></div>
+          <button class="btn call" id="btnCall" type="button">📞 Start call</button>
+          <label class="toggle"><input type="checkbox" id="ttsToggle"> Speak replies aloud</label>
+          <p class="muted small" id="engineNote"></p>
+          <p class="muted small" id="srNote"></p>
+        </div>
+        <div class="card chat-card">
+          <div class="card-h"><h2>Conversation</h2><button class="btn small ghost" id="btnClearChat" type="button">Clear</button></div>
+          <div class="chat" id="chat" aria-live="polite"></div>
+          <div class="chips suggest" id="suggest"></div>
+          <form class="composer" id="composer">
+            <button type="button" class="icon-btn mic" id="btnMic" title="Push to talk" aria-label="Push to talk">🎤</button>
+            <input id="chatInput" placeholder="Ask MEDIC, or log a value: 'heart rate 70'" autocomplete="off" aria-label="Message">
+            <button class="btn primary" type="submit">Send</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- LEARN -->
+    <section id="tab-learn" class="tab"><div id="learnBody"></div></section>
+  </main>
+
+  <footer class="foot">
+    Signos Vitales · NASA Space Apps Challenge 2026 · Educational prototype with simulated data, <b>not a medical device</b>.
+    Ranges are simplified general references; in an emergency, follow your crew's medical procedures.
+  </footer>
+
+  <div id="modal" class="modal" hidden><div class="modal-box" role="dialog" aria-modal="true"><div id="modalBody"></div></div></div>
+  <div id="toasts" aria-live="polite"></div>
+</body>
+</html>
