@@ -241,6 +241,7 @@ const Assistant = (() => {
       if (data && typeof data === 'object' && data.message === 'Error in workflow') {
         throw new Error('n8n returned "Error in workflow". Open the workflow\'s Executions tab in n8n to see which node failed');
       }
+      if (data && typeof data === 'object' && typeof data.error === 'string') throw new Error(data.error);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const reply = extractReply(data);
       if (!reply) throw new Error('the response had no "reply" field');
@@ -440,8 +441,8 @@ const Assistant = (() => {
     const n = el('engineNote');
     if (!n) return;
     n.innerHTML = crew.webhookUrl
-      ? '🟢 Answers from: <b>AI via n8n</b>. Health status always comes from the app\'s thresholds.'
-      : '⚪ Answers from: <b>offline rules</b>. Add an n8n webhook in ⚙ Settings to use a free LLM.';
+      ? '🟢 Answers from: <b>AI (free Groq LLM)</b>. Health status always comes from the app\'s thresholds.'
+      : '⚪ Answers from: <b>offline rules</b>. Add an AI service URL in ⚙ Settings to use a free LLM.';
   }
 
   return { init, renderChat, renderEngine, testConnection, endCall, isOnCall: () => call.active };

@@ -1,2 +1,5 @@
 .DS_Store
 _debug.html
+worker/.wrangler/
+node_modules/
+.dev.vars

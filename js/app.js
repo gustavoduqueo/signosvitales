@@ -303,8 +303,8 @@ function openSettings() {
     </div>
     <p class="muted small">Leave the PIN fields empty to keep your current PIN.</p>
     <h3 class="sub">Mission (shared by the whole crew)</h3>
-    <label class="fld">AI webhook URL (n8n, optional)
-      <input id="setHook" type="url" placeholder="https://YOUR-INSTANCE.app.n8n.cloud/webhook/medic" value="${esc(crew.webhookUrl)}"></label>
+    <label class="fld">AI service URL (Cloudflare Worker or n8n webhook, optional)
+      <input id="setHook" type="url" placeholder="https://medic-ai.YOUR-SUBDOMAIN.workers.dev" value="${esc(crew.webhookUrl)}"></label>
     <p class="muted small">MEDIC POSTs <code>{ user_message, health_summary, … }</code> and reads <code>reply</code> from the JSON response. Leave empty to use the offline rules. Setup steps are in the README.</p>
     <div class="row"><button class="btn small" id="btnTest">Test connection</button><span id="testOut" class="small"></span></div>
     <p id="setErr" class="pin-err" role="alert"></p>

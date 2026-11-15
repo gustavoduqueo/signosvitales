@@ -66,66 +66,47 @@ The app starts with a 4-person demo crew and 30 days of **simulated** data each 
 
 Deep links: `#dashboard`, `#checkin`, `#trends`, `#assistant`, `#learn`.
 
-## AI medical officer: free LLM through n8n (optional)
+## AI medical officer: free LLM through a Cloudflare Worker
 
-Without any setup, MEDIC answers with built-in offline rules. For natural conversation, connect it to an n8n workflow that uses a free LLM.
-
-**How the pieces fit:**
+MEDIC's AI runs through a small **Cloudflare Worker** ([worker/src/index.js](worker/src/index.js)) that calls a **free Groq LLM**. It is live at **https://medic-ai.signosvitales.workers.dev**, and the app uses it by default.
 
 ```
-Browser (Web Speech API speech-to-text) ──POST JSON──▶ n8n Webhook ─▶ AI Agent (Groq or Gemini, free tier) ─▶ Respond to Webhook
-       ▲                                                                                                            │
-       └──────────────────────── { "reply": "..." } ◀─────────────────────────────────────────────────────────────────┘
+Browser speech-to-text ──POST JSON──▶ Cloudflare Worker ──▶ Groq LLM (free tier)
+       ▲                                     │  (API key stored as a Worker secret)
+       └──────── { "reply": "..." } ◀────────┘
 Browser speaks the reply (speechSynthesis)
 ```
 
-Speech-to-text and text-to-speech run free in the browser. n8n only handles text.
+- **Free:** Workers' free plan covers 100,000 requests a day, and Groq's free tier covers the LLM. No n8n or paid plan is needed.
+- **Key stays secret:** the Groq key is stored as the Worker secret `GROQ_API_KEY` and never reaches the browser or this repo.
+- **Grounded in the app's data:** the Worker sends MEDIC's system prompt plus the astronaut's health summary. The model must not contradict the app's Normal / Watch / Alert statuses or diagnose, and it answers in 1–3 spoken-style sentences.
+- **Survives model retirements:** if Groq retires a model, the Worker asks Groq which models are available and picks a chat model automatically. It currently uses `openai/gpt-oss-120b`.
+- **Protected:** only `https://gustavoduqueo.github.io` and `localhost` can call it from a browser, with a best-effort limit of 20 requests per minute per IP.
+- **Fallback:** if the AI is unreachable, MEDIC says so in the chat and answers with its offline rules.
 
-### Build the workflow in n8n
+Health check: `curl https://medic-ai.signosvitales.workers.dev/` returns `{"ok":true,"keyConfigured":true,...}`.
 
-1. **Webhook** node
-   - HTTP Method: `POST` · Path: `medic`
-   - Respond: **Using 'Respond to Webhook' Node**
-   - Options → **Allowed Origins (CORS)**: `*` (or `http://localhost:8000`)
-2. **AI Agent** node
-   - Source for Prompt: **Define below** · Prompt: `{{ $json.body.user_message }}`
-     > ⚠️ The data you send is under **`body`**. `{{ $json.user_message }}` comes back empty and the agent fails with *"Error in workflow"*.
-   - Options → **System Message**:
-     ```
-     You are MEDIC, the onboard AI medical officer of a space mission. Speak in English,
-     in 1–3 short sentences suitable for being read aloud. Use ONLY the health data below.
-     The status of each indicator (Normal/Watch/Alert) was computed by the app: never
-     contradict it and never diagnose. For any Alert, give the first concrete action and
-     remind the astronaut to contact the flight surgeon, considering the signal delay.
-     For emergencies (chest pain, cannot breathe, unconscious), tell them to alert the crew immediately.
+### Deploy your own copy
 
-     Astronaut: {{ $json.body.astronaut }}
-     Health data: {{ JSON.stringify($json.body.health_summary) }}
-     ```
-   - **Chat Model** sub-node, either:
-     - **Groq Chat Model**: free API key at console.groq.com, model `llama-3.3-70b-versatile`, or
-     - **Google Gemini Chat Model**: free API key at aistudio.google.com, a `gemini-*-flash` model.
-   - *(Optional)* **Simple Memory** sub-node, Session Key: `{{ $('Webhook').item.json.body.session_id }}`
-3. **Respond to Webhook** node
-   - Respond With: **JSON** · Response Body:
-     ```
-     { "reply": {{ JSON.stringify($json.output) }} }
-     ```
-4. **Activate** the workflow and copy the **Production URL** (`/webhook/medic`, not `/webhook-test/`).
-5. In the app: **⚙ Settings → AI webhook URL** → paste the URL → **Test connection** → **Save**.
+```bash
+cd worker
+npx wrangler login                        # free Cloudflare account
+npx wrangler deploy                       # prints https://medic-ai.<your-subdomain>.workers.dev
+npx wrangler secret put GROQ_API_KEY      # paste a free key from console.groq.com
+```
 
-Free-tier rate limits change; check Groq's or Google's current limits before the demo. If the AI is unreachable, MEDIC says so in the chat and falls back to offline rules, so the demo keeps working.
+Edit `ALLOWED_ORIGINS` in [worker/wrangler.toml](worker/wrangler.toml) to match the site that hosts your app. Then paste the Worker URL into **⚙ Settings → AI service URL** (or change `DEFAULT_AI_URL` in `js/store.js`).
 
 ### Request the app sends
 
 ```json
 {
-  "user_message": "Why is my sleep flagged?",
+  "user_message": "Why am I so tired lately?",
   "session_id": "sv-ab12cd34",
-  "astronaut": "Cmdr. Rivera",
+  "astronaut": "Rivera (Commander)",
   "health_summary": {
     "mission_day": 42, "environment": "Mars Transit", "signal_delay_to_earth": "~12 min (3–22)",
-    "readiness_score": 72,
+    "readiness_score": 64,
     "indicators": [{ "name": "Sleep last night", "value": 5.6, "unit": "h", "status": "Alert", "normal_range": "7–9 h", "measured": "yesterday" }],
     "alerts": ["RED: Sleep last night: 5.6 h"]
   },
@@ -133,15 +114,11 @@ Free-tier rate limits change; check Groq's or Google's current limits before the
 }
 ```
 
-The app reads `reply` from the response (it also accepts `output`, `text` or `response`).
+The response is `{ "reply": "...", "model": "..." }`, or `{ "error": "..." }`, which MEDIC shows in the chat.
 
-Test from the terminal:
+### Alternative: n8n
 
-```bash
-curl -X POST "https://YOUR-INSTANCE.app.n8n.cloud/webhook/medic" \
-  -H "Content-Type: application/json" \
-  -d '{"user_message":"How am I doing?","health_summary":{"readiness_score":72}}'
-```
+[n8n/medic-workflow.json](n8n/medic-workflow.json) is an importable n8n workflow that does the same job: Webhook → AI Agent with a Groq Chat Model → Respond to Webhook with `{ "reply" }`. Import it, add a Groq credential, activate it, and paste its production webhook URL into ⚙ Settings. n8n Cloud has no free plan after its 14-day trial, so the Worker is the default.
 
 ## Demo script (≈2 minutes)
 

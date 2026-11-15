@@ -16,6 +16,7 @@ const ROLES = ['Commander', 'Flight Engineer', 'Mission Specialist', 'Crew Medic
 const CREW_VIEW_ROLES = ['Commander', 'Crew Medical Officer'];
 const AVATARS = ['🧑‍🚀', '👩‍🚀', '👨‍🚀', '🚀', '🛰️', '🌕', '🪐', '⭐'];
 const PIN_ITERATIONS = 100000;
+const DEFAULT_AI_URL = 'https://medic-ai.signosvitales.workers.dev'; // Cloudflare Worker -> Groq (see worker/)
 
 /* Demo crew: fictional astronauts, each with a different health story. */
 const DEMO_CREW = [
@@ -168,7 +169,8 @@ async function seedCrew(keep = {}) {
     v: 2,
     env: ENVIRONMENTS[keep.env] ? keep.env : 'transit',
     missionStart: addDays(today(), -41),
-    webhookUrl: keep.webhookUrl || '',
+    webhookUrl: keep.webhookUrl || DEFAULT_AI_URL,
+    aiDefaultApplied: true,
     ttsOn: keep.ttsOn !== undefined ? keep.ttsOn : true,
     members: [],
   };
@@ -185,6 +187,11 @@ async function initStore() {
     lsDel(LEGACY_KEY);
   }
   if (!ENVIRONMENTS[crew.env]) crew.env = 'transit';
+  if (!crew.aiDefaultApplied) { // crews created before the Worker existed: switch them on once
+    if (!crew.webhookUrl) crew.webhookUrl = DEFAULT_AI_URL;
+    crew.aiDefaultApplied = true;
+    saveCrew();
+  }
   let sid = null;
   try { sid = sessionStorage.getItem(SESSION_KEY); } catch (e) { /* ignore */ }
   if (sid && member(sid)) openMember(sid);
